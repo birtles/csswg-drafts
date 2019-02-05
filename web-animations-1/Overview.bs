@@ -66,6 +66,23 @@ div.switch > dl > dt:before {
   display: block;
   margin: .5em 2em;
 }
+
+table.keyframe-table {
+  max-width: 95%;
+  margin-left: auto;
+  margin-right: auto;
+  border-collapse: collapse;
+}
+table.keyframe-table td,
+table.keyframe-table th {
+  border: 1px solid black;
+  margin: 0;
+  padding: .5em;
+}
+table.keyframe-table td:nth-child(n+2),
+table.keyframe-table th:nth-child(n+2){
+  text-align: center;
+}
 </style>
 
 <pre class='metadata'>
@@ -121,6 +138,7 @@ urlPrefix: https://heycam.github.io/webidl/; type: dfn; spec: webidl
     text: es to dictionary
     text: es to DOMString; url: es-to-DOMString
     text: DOMString to es; url: DOMString-to-es
+    text: NoModificationAllowedError
 urlPrefix: http://www.ecma-international.org/ecma-262/6.0/#sec-; type: dfn; spec: ecma-262
     text: code realms
     text: completion record specification type
@@ -177,8 +195,12 @@ urlPrefix: https://drafts.csswg.org/cssom/; type: dfn; spec: cssom
 urlPrefix: https://drafts.csswg.org/css-transitions/; type: dfn; spec: css-transitions-1
     text: events from CSS transitions; url: transition-events
     text: transitionend
+urlPrefix: https://drafts.csswg.org/css-transitions-2/; type: dfn; spec: css-transitions-2
+    text: owning element (transition); url: owning-element
 urlPrefix: https://drafts.csswg.org/css-animations/; type: dfn; spec: css-animations-1
     text: events from CSS animations; url: events
+urlPrefix: https://drafts.csswg.org/css-animations-2/; type: dfn; spec: css-animations-2
+    text: owning element (animation); url: owning-element
 urlPrefix: https://drafts.csswg.org/css-writing-modes-4/; type: dfn; spec: css-writing-modes-4
     text: equivalent physical property; url: logical-to-physical
 </pre>
@@ -592,6 +614,11 @@ a document's load event.
 A <a>timeline</a> is considered to be <dfn lt="inactive timeline">inactive</dfn>
 when its <a>time value</a> is <a>unresolved</a>.
 
+A <a>timeline</a> is <dfn export lt="monotonically increasing timeline"
+local-lt="monotonically increasing">monotonically increasing</dfn> if its
+reported [=timeline current time|current time=] is always greater than or equal
+than its previously reported [=timeline current time|current time=].
+
 Specific types of [=timelines=] may define a procedure to <dfn lt="timeline time
 to origin-relative time" export>convert a timeline time to an
 origin-relative time</dfn> for [=time value=] |time|, so that the [=time
@@ -680,6 +707,9 @@ Issue(2079): There must be a better term than &ldquo;origin time&rdquo;&mdash;
 
 Prior to establishing the [=time origin=] for its associated document,
 a [=document timeline=] is <a lt="inactive timeline">inactive</a>.
+
+After a [=document timeline=] becomes [=inactive timeline|active=], it is
+[=monotonically increasing=].
 
 A <a>document timeline</a> that is associated with a {{Document}} which is not
 an <a>active document</a> is also considered to be
@@ -5383,6 +5413,9 @@ dictionary KeyframeAnimationOptions : KeyframeEffectOptions {
 };
 </pre>
 
+Issue: Add flags to <code>getAnimations()</code> to NOT return {{FillAnimation}}
+objects by default (and add to {{Document/getAnimations}} on {{Document}} too).
+
 <div class="methods">
 
 :   <dfn method for=Animatable lt="animate(keyframes, options)">Animation animate(keyframes, options)</dfn>
@@ -5456,6 +5489,9 @@ animation.play();</pre>
     contains at least one <a>animation effect</a> whose
     <a>target element</a> is this object.
 
+    Some [=animations=] may be represented by {{FillAnimation}} objects as
+    per the requirements in [[#filling-animations]].
+
     The returned list is sorted using the composite order described
     for the associated <a>animations</a> of effects in [[#the-effect-stack]].
 
@@ -5472,6 +5508,382 @@ animation.play();</pre>
 :   <dfn dict-member for=KeyframeAnimationOptions>id</dfn>
 ::  The string to assign to the generated {{Animation}}'s {{Animation/id}}
     attribute.
+
+</div>
+
+<h3 id="filling-animations">Retaining filling animations</h3>
+
+<div class="informative-bg"><em>This section is non-normative</em>
+
+Using the programming interface defined in this specification, it is possible to
+repeatedly trigger new animations that contribute to an element's animated style
+indefinitely.
+
+For example, consider the following code:
+
+<div class="example"><pre class="lang-javascript">
+elem.addEventListener('mousemove', evt => {
+  circle.animate(
+    { transform: `translate(${evt.clientX}, ${evt.clientY})` },
+    { duration: 500, fill: 'forwards' }
+  );
+});
+</pre></div>
+
+This will generate a new forwards-filling animation each time the mouse is
+moved, quickly producing hundreds, even thousands of forwards-filling
+animations.
+
+If the user agent is required to return <em>all</em> such animations from
+{{Animatable/getAnimations()}},
+the list of animations would grow in an unbounded fashion,
+producing a memory leak.
+
+While it is also possible to repeatedly create new CSS animations, for example,
+the situation in that case is mitigated by the fact that the author must either
+replace all existing CSS animations on the element or
+append to the list of animations.
+Should the author choose to append to the list of animations,
+the total number of animations will grow
+but the potential performance implications of their actions is more obvious.
+The &ldquo;fire and forget&rdquo; nature of the Web Animations API,
+on the other hand,
+makes it more likely that an author will unwittingly
+produce content that leaks memory.
+
+This section defines a mechanism that allows user agents to internally coalesce
+filling animations in many circumstances.
+
+</div>
+
+Certain animations, when returned from
+the {{Animatable/getAnimations()}} method of the {{Animatable}} mixin
+or the {{Document}} interface
+must be represented by a {{FillAnimation}} object.
+The circumstances when this replacement must be performed,
+and the properties of the substitute animations is defined below.
+
+<h4 id="requirements-for-replacing-animations">Requirements for replacing
+animations</h4>
+
+[=Animations=] for which <em>all</em> of the following conditions are true,
+must be represented by a {{FillAnimation}}
+when returned from either
+{{Animatable/getAnimations()}} on the {{Animatable}} mixin,
+or {{Document/getAnimations()}} on the {{Document}} interface.
+
+*   The existence of the [=animation=] is <em>not</em> prescribed by markup.
+    That is, it is <em>not</em>
+    a CSS animation with an [=owning element (animation)|owning element=], or
+    a CSS transition with an [=owning element (transition)|owning element=].
+*   The [=animation=]'s [=play state=] is [=finished play state|finished=].
+*   The [=animation=] is associated with a [=monotonically increasing=]
+    [=timeline=].
+*   The [=animation=] has an associated [=target effect=].
+*   The [=target effect=] associated with the [=animation=] is [=in effect=].
+
+<h4 id="requirements-for-combining-animations">Requirements for combining animations</h4>
+
+A {{FillAnimation}} typically represents one or more <dfn>source
+animations</dfn> although it may have zero source animations if it,
+or one of its source animations,
+is [=cancel an animation|canceled=].
+
+Within the set of [=animations=], sorted by composite order,
+that target a given element or pseudo-element,
+all adjacent [=animations=]
+that meet the requirements for being replaced by a {{FillAnimation}}
+(see [[#requirements-for-replacing-animations]]) and
+which are associated with the same [=timeline=],
+must be represented by a single {{FillAnimation}}.
+
+<h4 id="requirements-for-returned-fillanimations">Requirements on returned <code>FillAnimation</code> objects</h4>
+
+{{FillAnimation}} objects have the following IDL definition:
+
+<pre class='idl'>
+[Exposed=Window]
+interface FillAnimation : Animation {
+};
+</pre>
+
+The timing properties of a {{FillAnimation}} are as follows:
+
+*   [=start time=] is 0.
+*   [=playback rate=] is 1.
+*   [=hold time=] is [=unresolved=].
+*   the associated [=timeline=] is the common timeline of the [=source
+    animations=] for which it was generated to represent.
+
+The [=target effect=] of a {{FillAnimation}} is a [=keyframe effect=] with the
+following timing properties:
+
+*   [=start delay=] is 0.
+*   [=end delay=] is 0.
+*   [=iteration duration=] is positive infinity.
+
+    Issue: Making this zero would cause the [=play state=] of the resulting
+    {{FillAnimation}} to be [=finished play state|finished=] which is probably
+    more intuitive for a filling animation (and consistent with the play state
+    of its [=source animations=]).
+
+*   [=iteration count=] is 1.
+*   [=iteration start=] is 0.
+*   [=fill mode=] is &lsquo;both&rsquo;.
+*   [=playback direction=] is &lsquo;normal&rsquo;.
+*   [=timing function=] is the [=linear timing function=].
+
+The [=composite operation=] of the associated [=keyframe effect=] is
+[=composite operation replace|replace=].
+
+The keyframes returned by the [=target effect=] of a {{FillAnimation}} from its
+{{KeyframeEffect/getKeyframes}} method include the computed value of each
+longhand [=physical=] property targeted by the combination of all of the
+{{FillAnimation}}'s [=source animations=] at the point in the effect stack
+occupied by the [=target effect=] of the {{FillAnimation}}'s last
+[=source animation=].
+
+The [=target effect=] of a {{FillAnimation}} has exactly two keyframes with the
+following format:
+
+<table class="keyframe-table">
+  <thead>
+    <tr>
+      <th></th>
+      <th>Keyframe #1</th>
+      <th>Keyframe #2</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>[=keyframe offset=]</td>
+      <td>0</td>
+      <td>1</td>
+    </tr>
+    <tr>
+      <td>[=keyframe-specific composite operation=]</td>
+      <td>(not set)</td>
+      <td>(not set)</td>
+    </tr>
+    <tr>
+      <td>[=timing function=]</td>
+      <td>[=linear timing function=]</td>
+      <td>[=linear timing function=]</td>
+    </tr>
+    <tr>
+      <td><em>(Each affected longhand physical CSS property)</em></td>
+      <td>Computed value at corresponding position in the [=effect stack=]</td>
+      <td>Computed value at corresponding position in the [=effect stack=]</td>
+    </tr>
+  </tbody>
+</table>
+
+Since the computed value of each affected longhand physical property
+is returned,
+calling {{KeyframeEffect/getKeyframes}} method on a
+{{KeyframeEffect}} associated with a {{FillAnimation}} will produce a
+[=style change event=] for the [=target element=].
+
+<h4 id="fill-animation-mutability"><code>FillAnimation</code> mutability</h4>
+
+Both a {{FillAnimation}} and its [=target effect=] are read-only with the
+following exceptions:
+
+*   The {{Animation/id}}, {{Animation/onfinish}}, and {{Animation/oncancel}}
+    attributes are writeable.
+*   The {{Animation/cancel()}} method cancels the {{FillAnimation}} according to
+    the behavior defined in [[#relationship-to-source-animations]].
+
+All other attribute setters and methods that mutate a {{FillAnimation}} or
+a {{KeyframeEffect}} associated with a {{FillAnimation}} must [=throw=] a
+[=NoModificationAllowedError=].
+
+<h4 id="fill-animation-composite-order"><code>FillAnimation</code> composite order</h4>
+
+<div class="informative-bg"><em>This section is non-normative</em>
+
+{{FillAnimation}} objects are merely a representation of finished filling
+animations returned by the programming interface and do not affect the
+compositing of animations described in [[#the-effect-stack]].
+
+However, it is necessary to define their composite order for the purpose of
+sorting events dispatched by {{FillAnimation}}s.
+
+</div>
+
+The position of a {{FillAnimation}} in the [=global animation list=]
+is that of its last [=source animation=]
+(i.e. the source animation that appears latest in the
+[=global animation list=]).
+
+The {{FillAnimation}} retains this position even after it or all its [=source
+animations=] are canceled since this position is used to sort [=cancel events=]
+dispatched by the {{FillAnimation}}.
+
+When sorting a {{FillAnimation}} and one of its [=source animations=]
+(which may effectively occupy the same position in the
+[=global animation list=]),
+the [=source animation=] is considered to appear
+earlier in the [=global animation list=] than its {{FillAnimation}}
+(i.e. has a lower [=composite order=]).
+
+When sorting between two {{FillAnimation}}s that have the same effective
+position in the [=global animation list=]
+(due to having the same last [=source animation=]),
+they sort according to the order in which they were generated
+(that is, as per the regular [=composite order=] ignoring
+the special ordering defined in this section).
+
+<h4 id="fill-animation-object-identity">Requirements on <code>FillAnimation</code> object identity</h4>
+
+A {{FillAnimation}} has a fixed set of [=source animations=].
+
+Each time {{Animatable/getAnimations()}} is invoked,
+for each set of [=animations=] that is identified
+as requiring a {{FillAnimation}},
+if there is an existing {{FillAnimation}} object representing the same set of
+[=source animations=],
+the existing {{FillAnimation}} object must be returned.
+
+Conversely, if there is no existing {{FillAnimation}} representing
+a particular set of [=animations=] that requires a {{FillAnimation}},
+a new {{FillAnimation}} must be returned;
+an existing {{FillAnimation}} must not be re-used.
+Any existing {{FillAnimation}} is not canceled but
+continues to represent the set of [=source animations=]
+for which it was generated.
+
+<h4 id="relationship-to-source-animations">Relationship of <code>FillAnimation</code>s to their source animations</h4>
+
+Any existing {{Animation}} objects
+continue to function identically regardless of whether or not they are included
+in a {{FillAnimation}}'s [=source animations=].
+As a result, a filling [=animation=] may simultaneously be represented by
+a (mutable) {{Animation}} object
+and one or more (mostly immutable) {{FillAnimation}} objects.
+
+[=cancel an animation|Canceling=] a {{FillAnimation}}
+also cancels all of its [=source animations=].
+
+[=cancel an animation|Canceling=] an {{Animation}}
+that is a [=source animation=] for one or more
+{{FillAnimation}}s cancels all such {{FillAnimation}}s but does <em>not</em>
+cause them to subsequently cancel their remaining [=source animations=].
+
+Similarly,
+changing the [=target element=] of a [=keyframe effect=] whose
+associated [=animation=] is a [=source animation=]
+for one or more {{FillAnimation}}s,
+or changing the [=target effect=] of a [=source animation=]
+for one or more {{FillAnimation}}s,
+cancels all such {{FillAnimation}}s but does <em>not</em>
+cause them to subsequently cancel their remaining [=source animations=].
+
+<div class=note>
+
+The requirement that when the <em>[=target effect=]</em>
+of a [=source animation=] is changed,
+corresponding {{FillAnimation}}s are canceled
+is not merely an implementation convenience, it anticipates the introduction
+of group effects in a future version of this specification.
+
+With the introduction of group effects,
+the relationship between {{FillAnimation}}s and existing animations
+is expected to be expressed in terms of <em>source effects</em>
+rather than <em>source animations</em> since a single [=animation=] could
+effectively target multiple elements.
+
+Replacing the effect of an animation makes the old effect no longer
+[=in effect=] and hence should cancel any corresponding {{FillAnimation}}
+whose identity is based on it.
+
+</div>
+
+A canceled {{FillAnimation}} loses its association with its [=source
+animations=].
+As a result, the keyframes returned from its [=target effect=] will not
+specify any CSS properties.
+
+<h4 id="fill-animations-by-example">Examples of <code>FillAnimation</code>s</h4>
+
+<div class="informative-bg"><em>This section is non-normative</em>
+
+<div class="example">
+<pre class="lang-javascript">
+// Create a filling animation
+const animA = elem.animate({ opacity: 0 }, { fill: 'forwards', duration: 300 });
+animA.finish();
+
+const fillAnimA = elem.getAnimations()[0];
+console.assert(
+  fillAnimA !== animA,
+  'A new FillAnimation object should be returned'
+);
+console.assert(
+  elem.getAnimations()[0] === fillAnimA,
+  'The same object should be returned each time'
+);
+
+// Trigger a new animation
+const animB = elem.animate(
+  { opacity: 0.5 },
+  { fill: 'forwards', duration: 300 }
+);
+assert_array_equals(elem.getAnimations(), [fillAnimA, animB]);
+
+// Let it fill
+animB.finish();
+
+console.assert(
+  elem.getAnimations().length === 1,
+  'There should be one combined FillAnimation'
+);
+
+const fillAnimAB = elem.getAnimations()[0];
+console.assert(
+  fillAnimAB !== fillAnimA,
+  'The combined FillAnimation should be a different object to the previous one'
+);
+
+console.assert(
+  fillAnimA.playState === 'running',
+  'The previous FillAnimation should still be valid'
+);
+console.assert(
+  animA.playState === 'finished',
+  'The first animation should still be valid'
+);
+console.assert(
+  animB.playState === 'finished',
+  'The second animation should still be valid'
+);
+
+// Cancel the first FillAnimation (representing just the first Animation)
+fillAnimA.cancel();
+
+console.assert(
+  animA.playState === 'idle',
+  'The first animation should be canceled'
+);
+console.assert(
+  fillAnimAB.playState === 'idle',
+  'The combined FillAnimation should be canceled'
+);
+console.assert(
+  animB.playState === 'finished',
+  'The second animation should NOT be canceled'
+);
+
+const fillAnimB = elem.getAnimations()[0];
+console.assert(
+  fillAnimB !== fillAnimAB,
+  'A new FillAnimation should be returned for just the second animation'
+);
+console.assert(
+  fillAnimB.playState === 'running',
+  'The new FillAnimation should be running'
+);
+</pre></div>
 
 </div>
 
@@ -5504,6 +5916,9 @@ partial interface Document {
     <a>in effect</a> and whose <a>target element</a> is a <a>descendant</a>
     of the document.
 
+    Some [=animations=] may be represented by {{FillAnimation}} objects as
+    per the requirements in [[#filling-animations]].
+
     The returned list is sorted using the composite order described
     for the associated <a>animations</a> of effects in [[#the-effect-stack]].
 
@@ -5511,17 +5926,6 @@ partial interface Document {
     As a result, the returned list reflects the state <em>after</em> applying
     any pending style changes to animation such as changes to animation-related
     style properties that have yet to be processed.
-
-    Issue(2054): Both this method and {{Animatable/getAnimations()}} on the
-                 {{Animatable}} interface mixin require retaining
-                 forwards-filling <a>animation effects</a> and their
-                 <a>animations</a> such that a document that
-                 repeatedly produces forwards-filling animations will consume
-                 memory in an unbounded fashion.
-                 We may need to revise this definition (previously these methods
-                 only returned animations whose <a>target effect</a> was
-                 <a>current</a>) or provide a loophole for implementations to
-                 discard old animations in such conditions.
 
 </div>
 
